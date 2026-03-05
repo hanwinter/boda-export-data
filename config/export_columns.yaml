@@ -7,10 +7,20 @@
     title: 性别
   - field: id_no
     title: 证件号
-  - field: exam_date
-    title: 体检日期
+  - field: phone
+    title: 电话
+  - field: exam_no
+    title: 体检编号
+  - field: summary_date
+    title: 汇总日期
+  - field: final_date
+    title: 终检日期
+  - field: exam_status
+    title: 体检状态
+  - field: group_name
+    title: 项目组
   - field: item_name
-    title: 项目名称
+    title: 参数名称
   - field: result_value
     title: 结果值
   - field: unit
