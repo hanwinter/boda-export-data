@@ -398,6 +398,11 @@ export function App() {
             <Select
               placeholder="请选择单位"
               allowClear
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option) =>
+                String(option?.label || "").toLowerCase().includes(input.toLowerCase())
+              }
               style={{ width: 170 }}
               options={orgs.map((org) => ({ value: org.org_id, label: org.org_name }))}
             />
@@ -464,6 +469,7 @@ export function App() {
             pageSize: pagination.pageSize,
             total,
             showSizeChanger: true,
+            pageSizeOptions: ["20", "50", "100"],
             showTotal: (count) => `共 ${count} 条`,
             onChange: (page, pageSize) => loadRecords(page, pageSize)
           }}
@@ -535,3 +541,5 @@ export function App() {
     </div>
   );
 }
+
+

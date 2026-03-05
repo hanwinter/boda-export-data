@@ -10,28 +10,47 @@ Windows single-machine C/S application skeleton for:
 ## Structure
 
 - `app-api`: FastAPI backend.
-- `app-web`: frontend placeholder.
+- `app-web`: React frontend.
 - `app-desktop`: Electron packaging placeholder.
-- `config`: app/db/export settings.
+- `config`: app/db/export/view/dict settings.
 - `scripts`: start/build helper scripts.
 - `设计记录.md`: discussion and architecture notes.
 
-## Quick Start (Backend)
+## Quick Start
 
 ```powershell
 cd "D:\project\boda-export-data"
 .\.venv\Scripts\Activate.ps1
 pip install -r .\app-api\requirements.txt
+cd .\app-web && npm install
+```
+
+Run backend:
+
+```powershell
+cd "D:\project\boda-export-data"
 python .\app-api\run.py
 ```
 
-Open:
+Run frontend:
 
-- Swagger: `http://127.0.0.1:8000/docs`
-- Health: `http://127.0.0.1:8000/api/health`
+```powershell
+cd "D:\project\boda-export-data\app-web"
+npm run dev
+```
 
-## Next
+## MySQL View Integration
 
-1. Replace mock repository with MySQL table mapping.
-2. Implement React page in `app-web`.
-3. Integrate Electron one-click startup in `app-desktop`.
+1. Edit `config/db.yaml`
+- set `enabled: true`
+- fill host/port/user/password/database/view_name
+
+2. Edit `config/view_mapping.yaml`
+- map standard fields to your view columns
+
+3. Edit `config/dict_mapping.yaml`
+- map source enum values to frontend standard values
+
+4. Restart backend and test `/api/records`.
+
+If db config is incomplete or unavailable, backend automatically falls back to mock data.

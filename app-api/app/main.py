@@ -125,7 +125,7 @@ def get_records(
     final_end_date: date | None = Query(default=None),
     only_abnormal: bool = False,
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=500),
+    page_size: int = Query(default=20, ge=1, le=100),
     _: UserInfo = Depends(get_current_user),
 ):
     total, items = list_records(
@@ -159,3 +159,4 @@ def post_export(payload: ExportRequest, _: UserInfo = Depends(get_current_user))
     )
     file_name, file_path = export_records(records, payload.export_dir, payload.selected_groups)
     return ExportResponse(file_name=file_name, file_path=file_path)
+

@@ -1,7 +1,13 @@
 ﻿from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, datetime
+from typing import Any
+from urllib.parse import quote_plus
 
+from sqlalchemy import create_engine, text
+
+from app.core.settings import load_db_config, load_dict_mapping, load_view_mapping
 from app.models import ExamItem, ExamProjectGroup, ExamSummaryRecord, Org
 
 
@@ -49,81 +55,423 @@ MOCK_RECORDS = [
                         abnormal_flag="N",
                     ),
                 ],
-            ),
-            ExamProjectGroup(
-                group_name="尿常规",
-                group_is_abnormal=False,
-                abnormal_count=0,
-                items=[
-                    ExamItem(
-                        item_name="尿蛋白",
-                        result_value="阴性",
-                        unit=None,
-                        ref_range="阴性",
-                        is_abnormal=False,
-                        abnormal_flag="N",
-                    )
-                ],
-            ),
+            )
         ],
-    ),
-    ExamSummaryRecord(
-        record_id="rec-2001",
-        org_id="org-002",
-        org_name="第二单位",
-        person_id="p-002",
-        person_name="李四",
-        gender="女",
-        id_no="320101199502023456",
-        phone="13900002222",
-        exam_no="TJ20260088",
-        summary_date=date(2026, 2, 20),
-        final_date=None,
-        exam_status="已总检",
-        has_abnormal=True,
-        project_groups=[
-            ExamProjectGroup(
-                group_name="彩超",
-                group_is_abnormal=True,
-                abnormal_count=1,
-                items=[
-                    ExamItem(
-                        item_name="甲状腺结节",
-                        result_value="TI-RADS 4a",
-                        unit=None,
-                        ref_range="无明显异常",
-                        is_abnormal=True,
-                        abnormal_flag="H",
-                    )
-                ],
-            ),
-            ExamProjectGroup(
-                group_name="肝功能",
-                group_is_abnormal=False,
-                abnormal_count=0,
-                items=[
-                    ExamItem(
-                        item_name="谷丙转氨酶",
-                        result_value="26",
-                        unit="U/L",
-                        ref_range="0-40",
-                        is_abnormal=False,
-                        abnormal_flag="N",
-                    )
-                ],
-            ),
-        ],
-    ),
+    )
 ]
 
 
-def list_orgs() -> list[Org]:
-    return ORGS
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_$.]+$")
 
 
-def list_project_groups() -> list[str]:
-    names = {group.group_name for record in MOCK_RECORDS for group in record.project_groups}
-    return sorted(names)
+def _safe_id(name: str) -> str:
+    if not name or not SAFE_ID_RE.match(name):
+        raise ValueError("非法标识符")
+    return name
+
+
+def _build_engine():
+    cfg = load_db_config()
+    if not cfg.enabled or not cfg.host or not cfg.database or not cfg.user:
+        return None
+
+    password = quote_plus(cfg.password)
+    if cfg.db_type == "sqlserver":
+        url = f"mssql+pymssql://{cfg.user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}"
+    else:
+        url = f"mysql+pymysql://{cfg.user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}?charset=utf8mb4"
+    return create_engine(url, pool_pre_ping=True)
+
+
+def _get_mapping() -> dict[str, str]:
+    return (load_view_mapping().get("fields", {}) or {}).copy()
+
+
+def _get_source_field(std_field: str, mapping: dict[str, str]) -> str | None:
+    val = mapping.get(std_field)
+    return _safe_id(val) if val else None
+
+
+def _get_view_name() -> str | None:
+    cfg = load_db_config()
+    view_name = cfg.view_name or (load_view_mapping().get("view", {}) or {}).get("source_name", "")
+    return _safe_id(view_name) if view_name else None
+
+
+def _fmt(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _to_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except Exception:
+        return None
+
+
+def _read_cell(row: dict[str, Any], field: str | None) -> Any:
+    if not field:
+        return None
+    if field in row:
+        return row[field]
+    lower_field = field.lower()
+    for key in row.keys():
+        if str(key).lower() == lower_field:
+            return row[key]
+    return None
+
+
+def _build_filters_sql(
+    mapping: dict[str, str],
+    org_id: str | None,
+    keyword: str | None,
+    exam_no: str | None,
+    exam_status: str | None,
+    summary_start_date: date | None,
+    summary_end_date: date | None,
+    final_start_date: date | None,
+    final_end_date: date | None,
+    only_abnormal: bool,
+) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    clauses = ["1=1"]
+
+    org_field = _get_source_field("org_name", mapping)
+    name_field = _get_source_field("person_name", mapping)
+    phone_field = _get_source_field("phone", mapping)
+    exam_no_field = _get_source_field("exam_no", mapping)
+    exam_status_field = _get_source_field("exam_status", mapping)
+    summary_date_field = _get_source_field("summary_date", mapping)
+    final_date_field = _get_source_field("final_date", mapping)
+    abnormal_flag_field = _get_source_field("abnormal_flag", mapping)
+
+    if org_id and org_field:
+        clauses.append(f"{org_field} = :org_id")
+        params["org_id"] = org_id
+
+    if keyword:
+        kw = f"%{keyword.strip()}%"
+        sub = []
+        if name_field:
+            sub.append(f"{name_field} LIKE :kw")
+        if phone_field:
+            sub.append(f"{phone_field} LIKE :kw")
+        if sub:
+            clauses.append("(" + " OR ".join(sub) + ")")
+            params["kw"] = kw
+
+    if exam_no and exam_no_field:
+        clauses.append(f"{exam_no_field} LIKE :exam_no")
+        params["exam_no"] = f"%{exam_no.strip()}%"
+
+    if exam_status and exam_status_field:
+        status_map = load_dict_mapping().get("exam_status", {})
+        reverse_map = {v: k for k, v in status_map.items()}
+        raw_status = reverse_map.get(exam_status, exam_status)
+        clauses.append(f"{exam_status_field} = :exam_status")
+        params["exam_status"] = raw_status
+
+    if summary_start_date and summary_date_field:
+        clauses.append(f"{summary_date_field} >= :summary_start")
+        params["summary_start"] = summary_start_date
+    if summary_end_date and summary_date_field:
+        clauses.append(f"{summary_date_field} <= :summary_end")
+        params["summary_end"] = summary_end_date
+
+    if final_start_date and final_date_field:
+        clauses.append(f"{final_date_field} >= :final_start")
+        params["final_start"] = final_start_date
+    if final_end_date and final_date_field:
+        clauses.append(f"{final_date_field} <= :final_end")
+        params["final_end"] = final_end_date
+
+    if only_abnormal and abnormal_flag_field:
+        normal_values = [k.lower() for k in load_dict_mapping().get("abnormal_flag_normal_values", {}).keys()]
+        clauses.append(f"{abnormal_flag_field} IS NOT NULL")
+        clauses.append(f"LTRIM(RTRIM(CONCAT('', {abnormal_flag_field}))) <> ''")
+        if normal_values:
+            ph = []
+            for idx, value in enumerate(normal_values):
+                key = f"abn_normal_{idx}"
+                params[key] = value
+                ph.append(f":{key}")
+            clauses.append(f"LOWER(CONCAT('', {abnormal_flag_field})) NOT IN ({', '.join(ph)})")
+
+    return " AND ".join(clauses), params
+
+
+def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryRecord]:
+    mapping = _get_mapping()
+    dicts = load_dict_mapping()
+    gender_map = dicts.get("gender", {})
+    exam_status_map = dicts.get("exam_status", {})
+    normal_abnormal_values = {k.lower() for k in dicts.get("abnormal_flag_normal_values", {}).keys()}
+
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        org_name = _fmt(_read_cell(row, _get_source_field("org_name", mapping)))
+        exam_no = _fmt(_read_cell(row, _get_source_field("exam_no", mapping)))
+        person_name = _fmt(_read_cell(row, _get_source_field("person_name", mapping)))
+        gender_raw = _fmt(_read_cell(row, _get_source_field("gender", mapping)))
+        phone = _fmt(_read_cell(row, _get_source_field("phone", mapping)))
+
+        summary_date = _to_date(_read_cell(row, _get_source_field("summary_date", mapping)))
+        final_date = _to_date(_read_cell(row, _get_source_field("final_date", mapping)))
+
+        exam_status_raw = _fmt(_read_cell(row, _get_source_field("exam_status", mapping)))
+        exam_status = exam_status_map.get(exam_status_raw, exam_status_raw)
+
+        key = exam_no or f"{org_name}|{person_name}|{summary_date}"
+        if key not in grouped:
+            grouped[key] = {
+                "record_id": key,
+                "org_id": org_name,
+                "org_name": org_name,
+                "person_id": key,
+                "person_name": person_name,
+                "gender": gender_map.get(gender_raw, gender_raw),
+                "phone": phone,
+                "exam_no": exam_no,
+                "summary_date": summary_date,
+                "final_date": final_date,
+                "exam_status": exam_status,
+                "groups": {},
+            }
+
+        group_name = _fmt(_read_cell(row, _get_source_field("group_name", mapping))) or "未分组"
+        item_name = _fmt(_read_cell(row, _get_source_field("item_name", mapping)))
+        result_value = _fmt(_read_cell(row, _get_source_field("result_value", mapping)))
+        unit = _fmt(_read_cell(row, _get_source_field("unit", mapping)))
+        abnormal_flag = _fmt(_read_cell(row, _get_source_field("abnormal_flag", mapping)))
+
+        is_abnormal = bool(abnormal_flag.strip()) and abnormal_flag.strip().lower() not in normal_abnormal_values
+
+        groups = grouped[key]["groups"]
+        if group_name not in groups:
+            groups[group_name] = {
+                "group_name": group_name,
+                "group_is_abnormal": False,
+                "abnormal_count": 0,
+                "items": [],
+            }
+
+        groups[group_name]["items"].append(
+            ExamItem(
+                item_name=item_name,
+                result_value=result_value,
+                unit=unit or None,
+                ref_range=None,
+                is_abnormal=is_abnormal,
+                abnormal_flag=abnormal_flag or None,
+            )
+        )
+
+        if is_abnormal:
+            groups[group_name]["group_is_abnormal"] = True
+            groups[group_name]["abnormal_count"] += 1
+
+    records: list[ExamSummaryRecord] = []
+    for payload in grouped.values():
+        group_models = [
+            ExamProjectGroup(
+                group_name=g["group_name"],
+                group_is_abnormal=g["group_is_abnormal"],
+                abnormal_count=g["abnormal_count"],
+                items=g["items"],
+            )
+            for g in payload["groups"].values()
+        ]
+        records.append(
+            ExamSummaryRecord(
+                record_id=payload["record_id"],
+                org_id=payload["org_id"],
+                org_name=payload["org_name"],
+                person_id=payload["person_id"],
+                person_name=payload["person_name"],
+                gender=payload["gender"] or None,
+                id_no=None,
+                phone=payload["phone"] or None,
+                exam_no=payload["exam_no"],
+                summary_date=payload["summary_date"],
+                final_date=payload["final_date"],
+                exam_status=payload["exam_status"],
+                has_abnormal=any(g.group_is_abnormal for g in group_models),
+                project_groups=group_models,
+            )
+        )
+    return records
+
+
+def _fetch_records_db_paged(
+    org_id: str | None,
+    keyword: str | None,
+    exam_no: str | None,
+    exam_status: str | None,
+    summary_start_date: date | None,
+    summary_end_date: date | None,
+    final_start_date: date | None,
+    final_end_date: date | None,
+    only_abnormal: bool,
+    page: int,
+    page_size: int,
+) -> tuple[int, list[ExamSummaryRecord]]:
+    engine = _build_engine()
+    if engine is None:
+        raise RuntimeError("db disabled")
+
+    cfg = load_db_config()
+    mapping = _get_mapping()
+    view_name = _get_view_name()
+    if not view_name:
+        raise RuntimeError("view name missing")
+
+    exam_no_field = _get_source_field("exam_no", mapping)
+    if not exam_no_field:
+        raise RuntimeError("exam_no mapping missing")
+
+    where_sql, params = _build_filters_sql(
+        mapping,
+        org_id,
+        keyword,
+        exam_no,
+        exam_status,
+        summary_start_date,
+        summary_end_date,
+        final_start_date,
+        final_end_date,
+        only_abnormal,
+    )
+
+    with engine.connect() as conn:
+        count_sql = text(f"SELECT COUNT(DISTINCT {exam_no_field}) AS total FROM {view_name} WHERE {where_sql}")
+        total = int(conn.execute(count_sql, params).scalar() or 0)
+        if total == 0:
+            return 0, []
+
+        offset = max(page - 1, 0) * page_size
+        key_params = dict(params)
+        key_params["_offset"] = offset
+        key_params["_limit"] = page_size
+
+        if cfg.db_type == "sqlserver":
+            page_sql_str = (
+                f"SELECT DISTINCT {exam_no_field} AS exam_no_key FROM {view_name} "
+                f"WHERE {where_sql} "
+                f"ORDER BY {exam_no_field} OFFSET :_offset ROWS FETCH NEXT :_limit ROWS ONLY"
+            )
+        else:
+            page_sql_str = (
+                f"SELECT DISTINCT {exam_no_field} AS exam_no_key FROM {view_name} "
+                f"WHERE {where_sql} "
+                f"ORDER BY {exam_no_field} LIMIT :_limit OFFSET :_offset"
+            )
+
+        key_rows = conn.execute(text(page_sql_str), key_params).mappings().all()
+        page_exam_nos = [str(r["exam_no_key"]) for r in key_rows if r.get("exam_no_key") is not None]
+        if not page_exam_nos:
+            return total, []
+
+        in_params = dict(params)
+        placeholders = []
+        for i, no in enumerate(page_exam_nos):
+            key = f"_exam_no_{i}"
+            in_params[key] = no
+            placeholders.append(f":{key}")
+
+        group_field = _get_source_field("group_name", mapping)
+        item_field = _get_source_field("item_name", mapping)
+        order_parts = [exam_no_field]
+        if group_field:
+            order_parts.append(group_field)
+        if item_field:
+            order_parts.append(item_field)
+
+        detail_sql = text(
+            f"SELECT * FROM {view_name} WHERE {where_sql} "
+            f"AND {exam_no_field} IN ({', '.join(placeholders)}) "
+            f"ORDER BY {', '.join(order_parts)}"
+        )
+        detail_rows = [dict(r) for r in conn.execute(detail_sql, in_params).mappings().all()]
+
+    records = _build_records_from_rows(detail_rows)
+    order_index = {no: idx for idx, no in enumerate(page_exam_nos)}
+    records.sort(key=lambda r: order_index.get(r.exam_no, 10**9))
+    return total, records
+
+
+def _fetch_rows_for_export_db(
+    org_id: str | None,
+    keyword: str | None,
+    exam_no: str | None,
+    exam_status: str | None,
+    summary_start_date: date | None,
+    summary_end_date: date | None,
+    final_start_date: date | None,
+    final_end_date: date | None,
+    only_abnormal: bool,
+) -> list[ExamSummaryRecord]:
+    engine = _build_engine()
+    if engine is None:
+        raise RuntimeError("db disabled")
+
+    mapping = _get_mapping()
+    view_name = _get_view_name()
+    if not view_name:
+        raise RuntimeError("view name missing")
+
+    where_sql, params = _build_filters_sql(
+        mapping,
+        org_id,
+        keyword,
+        exam_no,
+        exam_status,
+        summary_start_date,
+        summary_end_date,
+        final_start_date,
+        final_end_date,
+        only_abnormal,
+    )
+
+    exam_no_field = _get_source_field("exam_no", mapping)
+    group_field = _get_source_field("group_name", mapping)
+    item_field = _get_source_field("item_name", mapping)
+    order_parts = [p for p in [exam_no_field, group_field, item_field] if p]
+
+    with engine.connect() as conn:
+        sql = text(
+            f"SELECT * FROM {view_name} WHERE {where_sql}"
+            + (f" ORDER BY {', '.join(order_parts)}" if order_parts else "")
+        )
+        rows = [dict(r) for r in conn.execute(sql, params).mappings().all()]
+    return _build_records_from_rows(rows)
+
+
+def _fetch_distinct_field_db(std_field: str) -> list[str]:
+    engine = _build_engine()
+    if engine is None:
+        return []
+    mapping = _get_mapping()
+    view_name = _get_view_name()
+    source_field = _get_source_field(std_field, mapping)
+    if not view_name or not source_field:
+        return []
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"SELECT DISTINCT {source_field} AS v FROM {view_name}"), {}).mappings().all()
+    values = [str(r["v"]).strip() for r in rows if r.get("v") is not None and str(r["v"]).strip()]
+    values.sort()
+    return values
+
+
+def _db_enabled() -> bool:
+    return load_db_config().enabled
 
 
 def _match_date(value: date | None, start: date | None, end: date | None) -> bool:
@@ -136,7 +484,7 @@ def _match_date(value: date | None, start: date | None, end: date | None) -> boo
     return True
 
 
-def _filter_records(
+def _filter_records_mock(
     org_id: str | None,
     keyword: str | None,
     exam_no: str | None,
@@ -152,29 +500,41 @@ def _filter_records(
         records = [record for record in records if record.org_id == org_id]
     if keyword:
         key = keyword.strip().lower()
-        records = [
-            record
-            for record in records
-            if key in record.person_name.lower() or (record.id_no and key in record.id_no.lower())
-        ]
+        records = [record for record in records if key in record.person_name.lower()]
     if exam_no:
         key = exam_no.strip().lower()
         records = [record for record in records if key in record.exam_no.lower()]
     if exam_status:
         records = [record for record in records if record.exam_status == exam_status]
     if summary_start_date or summary_end_date:
-        records = [
-            record
-            for record in records
-            if _match_date(record.summary_date, summary_start_date, summary_end_date)
-        ]
+        records = [record for record in records if _match_date(record.summary_date, summary_start_date, summary_end_date)]
     if final_start_date or final_end_date:
-        records = [
-            record for record in records if _match_date(record.final_date, final_start_date, final_end_date)
-        ]
+        records = [record for record in records if _match_date(record.final_date, final_start_date, final_end_date)]
     if only_abnormal:
         records = [record for record in records if record.has_abnormal]
     return records
+
+
+def list_orgs() -> list[Org]:
+    if _db_enabled():
+        try:
+            names = _fetch_distinct_field_db("org_name")
+            if names:
+                return [Org(org_id=name, org_name=name) for name in names]
+        except Exception:
+            pass
+    return ORGS
+
+
+def list_project_groups() -> list[str]:
+    if _db_enabled():
+        try:
+            names = _fetch_distinct_field_db("group_name")
+            if names:
+                return names
+        except Exception:
+            pass
+    return sorted({group.group_name for record in MOCK_RECORDS for group in record.project_groups})
 
 
 def list_records(
@@ -190,7 +550,25 @@ def list_records(
     page: int,
     page_size: int,
 ) -> tuple[int, list[ExamSummaryRecord]]:
-    filtered = _filter_records(
+    if _db_enabled():
+        try:
+            return _fetch_records_db_paged(
+                org_id,
+                keyword,
+                exam_no,
+                exam_status,
+                summary_start_date,
+                summary_end_date,
+                final_start_date,
+                final_end_date,
+                only_abnormal,
+                page,
+                page_size,
+            )
+        except Exception:
+            pass
+
+    filtered = _filter_records_mock(
         org_id,
         keyword,
         exam_no,
@@ -218,7 +596,23 @@ def list_records_for_export(
     final_end_date: date | None,
     only_abnormal: bool,
 ) -> list[ExamSummaryRecord]:
-    return _filter_records(
+    if _db_enabled():
+        try:
+            return _fetch_rows_for_export_db(
+                org_id,
+                keyword,
+                exam_no,
+                exam_status,
+                summary_start_date,
+                summary_end_date,
+                final_start_date,
+                final_end_date,
+                only_abnormal,
+            )
+        except Exception:
+            pass
+
+    return _filter_records_mock(
         org_id,
         keyword,
         exam_no,

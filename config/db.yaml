@@ -1,5 +1,8 @@
-﻿host: 127.0.0.1
-port: 3306
-user: root
-password: ""
-database: ""
+﻿enabled: true
+db_type: sqlserver
+host: 192.168.6.101
+port: 1433
+user: ThorgeneOutBoDaResultNew
+password: "ThorgeneOutBoDaResultNew"
+database: "WtlPeisV1"
+view_name: "V_SINGLE_CHECK_RESULT"

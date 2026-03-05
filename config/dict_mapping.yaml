@@ -1,0 +1,18 @@
+﻿dicts:
+  exam_status:
+    终检完毕: 已终检
+    总检完毕: 已总检
+    已总检: 已总检
+    已终检: 已终检
+    未总检: 待总检
+  gender:
+    男: 男
+    女: 女
+    M: 男
+    F: 女
+  abnormal_flag_normal_values:
+    "": ""
+    N: N
+    正常: 正常
+    阴性: 阴性
+    none: none

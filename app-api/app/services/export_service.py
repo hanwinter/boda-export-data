@@ -4,37 +4,28 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 
-from app.core.settings import ROOT_DIR, load_app_config, load_export_columns
+from app.core.settings import ROOT_DIR, load_app_config
 from app.models import ExamSummaryRecord
 
 
 RED_FONT = Font(color="FF0000", bold=True)
+BOLD_FONT = Font(bold=True)
+GROUP_FILL = PatternFill(fill_type="solid", fgColor="DDEBF7")
 
 
-DEFAULT_COLUMNS = [
-    {"field": "org_name", "title": "单位"},
-    {"field": "person_name", "title": "姓名"},
-    {"field": "gender", "title": "性别"},
-    {"field": "id_no", "title": "证件号"},
-    {"field": "phone", "title": "电话"},
-    {"field": "exam_no", "title": "体检编号"},
-    {"field": "summary_date", "title": "汇总日期"},
-    {"field": "final_date", "title": "终检日期"},
-    {"field": "exam_status", "title": "体检状态"},
-    {"field": "group_name", "title": "项目组"},
-    {"field": "item_name", "title": "参数名称"},
-    {"field": "result_value", "title": "结果值"},
-    {"field": "unit", "title": "单位"},
-    {"field": "ref_range", "title": "参考范围"},
-    {"field": "abnormal_flag", "title": "异常标记"},
+BASE_COLUMNS = [
+    ("org_name", "单位"),
+    ("person_name", "姓名"),
+    ("gender", "性别"),
+    ("id_no", "证件号"),
+    ("phone", "电话"),
+    ("exam_no", "体检编号"),
+    ("summary_date", "汇总日期"),
+    ("final_date", "终检日期"),
+    ("exam_status", "体检状态"),
 ]
-
-
-def _get_columns() -> list[dict[str, str]]:
-    configured = load_export_columns()
-    return configured if configured else DEFAULT_COLUMNS
 
 
 def _resolve_export_dir(requested_export_dir: str | None) -> Path:
@@ -56,6 +47,33 @@ def _allow_group(group_name: str, selected_groups: set[str] | None) -> bool:
     return group_name in selected_groups
 
 
+def _build_group_items(
+    records: list[ExamSummaryRecord],
+    selected_group_set: set[str] | None,
+) -> list[tuple[str, list[str]]]:
+    group_items: dict[str, list[str]] = {}
+    group_order: list[str] = []
+
+    for record in records:
+        for group in record.project_groups:
+            if not _allow_group(group.group_name, selected_group_set):
+                continue
+            if group.group_name not in group_items:
+                group_items[group.group_name] = []
+                group_order.append(group.group_name)
+            for item in group.items:
+                if item.item_name not in group_items[group.group_name]:
+                    group_items[group.group_name].append(item.item_name)
+
+    return [(name, group_items[name]) for name in group_order]
+
+
+def _fmt(value) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
 def export_records(
     records: list[ExamSummaryRecord],
     export_dir: str | None = None,
@@ -71,67 +89,60 @@ def export_records(
     sheet = workbook.active
     sheet.title = "体检数据"
 
-    columns = _get_columns()
-    headers = [column["title"] for column in columns]
+    group_items_layout = _build_group_items(records, selected_group_set)
+
+    headers: list[str] = [title for _, title in BASE_COLUMNS]
+    group_col_indexes: list[int] = []
+    item_col_index: dict[tuple[str, str], int] = {}
+
+    for group_name, item_names in group_items_layout:
+        headers.append(f"{group_name}·组合结果")
+        group_col_indexes.append(len(headers))
+        for item_name in item_names:
+            headers.append(item_name)
+            item_col_index[(group_name, item_name)] = len(headers)
+
     sheet.append(headers)
 
-    for index, title in enumerate(headers, start=1):
-        sheet.cell(row=1, column=index).font = Font(bold=True)
-        sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = max(len(title) * 2, 12)
+    for idx, title in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=idx)
+        cell.font = BOLD_FONT
+        if idx in group_col_indexes:
+            cell.fill = GROUP_FILL
+        sheet.column_dimensions[cell.column_letter].width = max(min(len(title) * 2, 32), 12)
 
     for record in records:
+        group_result_map: dict[str, str] = {}
+        item_value_map: dict[tuple[str, str], tuple[str, bool]] = {}
+
         for group in record.project_groups:
             if not _allow_group(group.group_name, selected_group_set):
                 continue
-
-            if not group.items:
-                row_data = {
-                    "org_name": record.org_name,
-                    "person_name": record.person_name,
-                    "gender": record.gender,
-                    "id_no": record.id_no,
-                    "phone": record.phone,
-                    "exam_no": record.exam_no,
-                    "summary_date": record.summary_date,
-                    "final_date": record.final_date,
-                    "exam_status": record.exam_status,
-                    "group_name": group.group_name,
-                    "item_name": "",
-                    "result_value": "",
-                    "unit": "",
-                    "ref_range": "",
-                    "abnormal_flag": "",
-                }
-                row = [str(row_data.get(column["field"], "") or "") for column in columns]
-                sheet.append(row)
-                continue
-
+            status_text = "异常" if group.group_is_abnormal else "正常"
+            group_result_map[group.group_name] = f"{group.group_name}({status_text})"
             for item in group.items:
-                row_data = {
-                    "org_name": record.org_name,
-                    "person_name": record.person_name,
-                    "gender": record.gender,
-                    "id_no": record.id_no,
-                    "phone": record.phone,
-                    "exam_no": record.exam_no,
-                    "summary_date": record.summary_date,
-                    "final_date": record.final_date,
-                    "exam_status": record.exam_status,
-                    "group_name": group.group_name,
-                    "item_name": item.item_name,
-                    "result_value": item.result_value,
-                    "unit": item.unit,
-                    "ref_range": item.ref_range,
-                    "abnormal_flag": item.abnormal_flag,
-                }
-                row = [str(row_data.get(column["field"], "") or "") for column in columns]
-                sheet.append(row)
+                item_value_map[(group.group_name, item.item_name)] = (_fmt(item.result_value), item.is_abnormal)
 
-                if item.is_abnormal:
-                    row_index = sheet.max_row
-                    for column_index, column in enumerate(columns, start=1):
-                        if column["field"] in {"result_value", "abnormal_flag", "item_name"}:
-                            sheet.cell(row=row_index, column=column_index).font = RED_FONT
+        row_values = [_fmt(getattr(record, field, "")) for field, _ in BASE_COLUMNS]
+        abnormal_cols: list[int] = []
 
+        for group_name, item_names in group_items_layout:
+            row_values.append(group_result_map.get(group_name, ""))
+            for item_name in item_names:
+                value, is_abnormal = item_value_map.get((group_name, item_name), ("", False))
+                row_values.append(value)
+                if is_abnormal:
+                    abnormal_cols.append(item_col_index[(group_name, item_name)])
+
+        sheet.append(row_values)
+        row_idx = sheet.max_row
+
+        for col_idx in group_col_indexes:
+            sheet.cell(row=row_idx, column=col_idx).fill = GROUP_FILL
+
+        for col_idx in abnormal_cols:
+            sheet.cell(row=row_idx, column=col_idx).font = RED_FONT
+
+    sheet.freeze_panes = "A2"
     workbook.save(file_path)
     return file_name, str(file_path)

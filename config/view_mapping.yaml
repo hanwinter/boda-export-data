@@ -1,0 +1,19 @@
+﻿view:
+  source_name: "V_SINGLE_CHECK_RESULT"
+fields:
+  org_name: ENTERPRICE
+  exam_no: SGLCHECKID
+  person_name: NAME
+  gender: SEX
+  age: age
+  phone: MOBILEPHONE
+  register_date: REGISTDATE
+  summary_date: ANALYZEDATE
+  final_date: AUDITEDATE
+  exam_status: CHECKSTATUS
+  group_name: CHECKMODULENAME
+  item_name: CHECKITEMNAME
+  result_value: ITEMRESULT
+  unit: UNIT
+  abnormal_flag: CRITICALNAME
+  diagnosis_result: DIAGRESULT
