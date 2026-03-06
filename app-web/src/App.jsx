@@ -91,7 +91,6 @@ function LoginCard({ onLogin }) {
     <div className="login-wrap">
       <Card className="login-card" bordered={false}>
         <h2 className="title">用户登录</h2>
-        <p className="subtitle">默认测试账号：admin/admin123 或 viewer/viewer123</p>
         <Form form={form} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true, message: "请输入用户名" }]}>
             <Input placeholder="请输入用户名" />
