@@ -1,5 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,7 +32,32 @@ class DbConfig:
     view_name: str = ""
 
 
-ROOT_DIR = Path(__file__).resolve().parents[3]
+def _resolve_root_dir() -> Path:
+    env_root = os.getenv("BODA_ROOT_DIR", "").strip()
+    if env_root:
+        env_path = Path(env_root).resolve()
+        if (env_path / "config").exists():
+            return env_path
+
+    code_root = Path(__file__).resolve().parents[3]
+    if (code_root / "config").exists():
+        return code_root
+
+    frozen_base = getattr(sys, "_MEIPASS", None)
+    if frozen_base:
+        frozen_path = Path(frozen_base).resolve()
+        if (frozen_path / "config").exists():
+            return frozen_path
+
+    exe_dir = Path(sys.executable).resolve().parent
+    for candidate in [exe_dir, exe_dir.parent, Path.cwd().resolve()]:
+        if (candidate / "config").exists():
+            return candidate
+
+    return code_root
+
+
+ROOT_DIR = _resolve_root_dir()
 CONFIG_DIR = ROOT_DIR / "config"
 
 

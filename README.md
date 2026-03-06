@@ -1,9 +1,9 @@
 ﻿# boda-export-data
 
-Windows single-machine C/S application skeleton for:
+Windows single-machine C/S application for:
 
-1. Connecting to existing MySQL.
-2. Reading org/person/exam/abnormal data.
+1. Connecting to existing SQLServer/MySQL.
+2. Reading org/person/exam data.
 3. Showing data in frontend.
 4. Exporting to Excel with abnormal values marked in red.
 
@@ -11,46 +11,40 @@ Windows single-machine C/S application skeleton for:
 
 - `app-api`: FastAPI backend.
 - `app-web`: React frontend.
-- `app-desktop`: Electron packaging placeholder.
+- `app-desktop`: Electron desktop app.
 - `config`: app/db/export/view/dict settings.
-- `scripts`: start/build helper scripts.
-- `设计记录.md`: discussion and architecture notes.
+- `scripts`: helper scripts.
 
-## Quick Start
+## Run (Web + API)
 
 ```powershell
 cd "D:\project\boda-export-data"
 .\.venv\Scripts\Activate.ps1
-pip install -r .\app-api\requirements.txt
-cd .\app-web && npm install
-```
-
-Run backend:
-
-```powershell
-cd "D:\project\boda-export-data"
 python .\app-api\run.py
-```
 
-Run frontend:
-
-```powershell
 cd "D:\project\boda-export-data\app-web"
+npm install
 npm run dev
 ```
 
-## MySQL View Integration
+## Desktop (Installer)
 
-1. Edit `config/db.yaml`
-- set `enabled: true`
-- fill host/port/user/password/database/view_name
+Build installer:
 
-2. Edit `config/view_mapping.yaml`
-- map standard fields to your view columns
+```powershell
+cd "D:\project\boda-export-data"
+.\scripts\build-win.ps1
+```
 
-3. Edit `config/dict_mapping.yaml`
-- map source enum values to frontend standard values
+Run desktop in dev mode:
 
-4. Restart backend and test `/api/records`.
+```powershell
+cd "D:\project\boda-export-data\app-desktop"
+npm install
+npm run dev
+```
 
-If db config is incomplete or unavailable, backend automatically falls back to mock data.
+## Export Path Selection
+
+- In desktop mode, export dialog supports native "选择目录" button.
+- In browser mode, enter path manually.

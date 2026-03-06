@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -322,6 +322,23 @@ export function App() {
   const openExportModal = () => {
     exportForm.setFieldsValue({ export_dir: "", selected_groups: [] });
     setExportModalOpen(true);
+  };
+
+  const pickExportDirectory = async () => {
+    const bridge = window?.bodaDesktop;
+    if (!bridge || !bridge.isDesktop || typeof bridge.selectExportDirectory !== "function") {
+      message.info("浏览器模式不支持目录选择，请手动填写路径");
+      return;
+    }
+
+    try {
+      const selected = await bridge.selectExportDirectory();
+      if (selected) {
+        exportForm.setFieldValue("export_dir", selected);
+      }
+    } catch {
+      message.error("选择目录失败");
+    }
   };
 
   const openUserModal = () => {

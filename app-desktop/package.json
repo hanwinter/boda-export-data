@@ -1,0 +1,48 @@
+{
+  "name": "boda-export-data-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "37.2.6",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.boda.exportdata",
+    "productName": "Boda Export Data",
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../app-web/dist",
+        "to": "app-web-dist"
+      },
+      {
+        "from": "../config",
+        "to": "config"
+      },
+      {
+        "from": "../app-api/dist/boda-api.exe",
+        "to": "backend-api/boda-api.exe"
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
