@@ -12,6 +12,10 @@ class AppConfig:
     host: str = "127.0.0.1"
     port: int = 8000
     export_dir: str = "exports"
+    default_query_days: int = 30
+    cache_ttl_orgs_seconds: int = 600
+    cache_ttl_groups_seconds: int = 600
+    cache_ttl_total_seconds: int = 300
 
 
 @dataclass
@@ -44,6 +48,10 @@ def load_app_config() -> AppConfig:
         host=data.get("host", "127.0.0.1"),
         port=int(data.get("port", 8000)),
         export_dir=data.get("export_dir", "exports"),
+        default_query_days=int(data.get("default_query_days", 30)),
+        cache_ttl_orgs_seconds=int(data.get("cache_ttl_orgs_seconds", 600)),
+        cache_ttl_groups_seconds=int(data.get("cache_ttl_groups_seconds", 600)),
+        cache_ttl_total_seconds=int(data.get("cache_ttl_total_seconds", 300)),
     )
 
 
@@ -51,7 +59,6 @@ def load_db_config() -> DbConfig:
     data = _read_yaml(CONFIG_DIR / "db.yaml")
     db_type = str(data.get("db_type", "")).strip().lower()
     if not db_type:
-        # compatibility fallback: infer sqlserver from 1433
         try:
             port = int(data.get("port", 3306))
         except Exception:

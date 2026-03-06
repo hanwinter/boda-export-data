@@ -15,6 +15,7 @@ import {
   Tag
 } from "antd";
 import { api, TOKEN_KEY } from "./api";
+import dayjs from "dayjs";
 
 const { RangePicker } = DatePicker;
 const statusOptions = ["待总检", "已总检", "已终检"];
@@ -127,6 +128,13 @@ export function App() {
 
   const columns = useMemo(
     () => [
+      {
+        title: "序号",
+        key: "row_no",
+        width: 80,
+        fixed: "left",
+        render: (_value, _row, index) => (pagination.current - 1) * pagination.pageSize + index + 1
+      },
       { title: "单位", dataIndex: "org_name", key: "org_name", width: 140, fixed: "left" },
       { title: "姓名", dataIndex: "person_name", key: "person_name", width: 100, fixed: "left" },
       { title: "性别", dataIndex: "gender", key: "gender", width: 80 },
@@ -153,7 +161,7 @@ export function App() {
         render: (value) => (value ? <Tag color="red">异常</Tag> : <Tag color="success">正常</Tag>)
       }
     ],
-    []
+    [pagination.current, pagination.pageSize]
   );
 
   const userColumns = [
@@ -304,7 +312,10 @@ export function App() {
 
   const handleReset = () => {
     form.resetFields();
-    form.setFieldsValue({ only_abnormal: false });
+    form.setFieldsValue({
+      only_abnormal: false,
+      summary_date: [dayjs().subtract(29, "day"), dayjs()]
+    });
     loadRecords(1, pagination.pageSize);
   };
 
@@ -362,7 +373,10 @@ export function App() {
 
   useEffect(() => {
     if (!user) return;
-    form.setFieldsValue({ only_abnormal: false });
+    form.setFieldsValue({
+      only_abnormal: false,
+      summary_date: [dayjs().subtract(29, "day"), dayjs()]
+    });
     loadOrgs();
     loadProjectGroups();
     loadRecords(1, pagination.pageSize);
@@ -541,5 +555,6 @@ export function App() {
     </div>
   );
 }
+
 
 

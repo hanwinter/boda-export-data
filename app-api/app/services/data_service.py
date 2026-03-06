@@ -1,13 +1,16 @@
 ﻿from __future__ import annotations
 
+import hashlib
+import json
 import re
-from datetime import date, datetime
+import time
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, text
 
-from app.core.settings import load_db_config, load_dict_mapping, load_view_mapping
+from app.core.settings import load_app_config, load_db_config, load_dict_mapping, load_view_mapping
 from app.models import ExamItem, ExamProjectGroup, ExamSummaryRecord, Org
 
 
@@ -63,6 +66,51 @@ MOCK_RECORDS = [
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_$.]+$")
 
+_META_CACHE: dict[str, tuple[float, Any]] = {}
+_TOTAL_CACHE: dict[str, tuple[float, int]] = {}
+
+
+def _cache_get(cache: dict[str, tuple[float, Any]], key: str):
+    now = time.time()
+    item = cache.get(key)
+    if not item:
+        return None
+    exp, value = item
+    if exp < now:
+        cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(cache: dict[str, tuple[float, Any]], key: str, value: Any, ttl: int) -> None:
+    cache[key] = (time.time() + max(ttl, 1), value)
+
+
+def _normalize_date_filters(
+    summary_start_date: date | None,
+    summary_end_date: date | None,
+    final_start_date: date | None,
+    final_end_date: date | None,
+) -> tuple[date | None, date | None, date | None, date | None]:
+    if summary_start_date or summary_end_date or final_start_date or final_end_date:
+        return summary_start_date, summary_end_date, final_start_date, final_end_date
+
+    days = max(load_app_config().default_query_days, 1)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days - 1)
+    return start_date, end_date, final_start_date, final_end_date
+
+
+def _make_total_cache_key(view_name: str, where_sql: str, params: dict[str, Any]) -> str:
+    normalized = {}
+    for k, v in sorted(params.items()):
+        if isinstance(v, (date, datetime)):
+            normalized[k] = v.isoformat()
+        else:
+            normalized[k] = str(v)
+    raw = json.dumps({"view": view_name, "where": where_sql, "params": normalized}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
 
 def _safe_id(name: str) -> str:
     if not name or not SAFE_ID_RE.match(name):
@@ -99,7 +147,32 @@ def _get_view_name() -> str | None:
 
 
 def _fmt(value: Any) -> str:
-    return "" if value is None else str(value)
+    if value is None:
+        return ""
+
+    text_value: str
+    if isinstance(value, (bytes, bytearray)):
+        for enc in ("utf-8", "gbk", "gb18030", "latin-1"):
+            try:
+                text_value = value.decode(enc)
+                break
+            except Exception:
+                continue
+        else:
+            text_value = str(value)
+    else:
+        text_value = str(value)
+
+    # Fix common SQLServer mojibake like '??' -> '?', '??' -> '?'
+    if text_value and all(ord(ch) <= 0x00FF for ch in text_value):
+        try:
+            recovered = text_value.encode("latin-1").decode("gbk")
+            if recovered:
+                return recovered
+        except Exception:
+            pass
+
+    return text_value
 
 
 def _to_date(value: Any) -> date | None:
@@ -113,6 +186,54 @@ def _to_date(value: Any) -> date | None:
         return datetime.fromisoformat(str(value)).date()
     except Exception:
         return None
+
+
+def _parse_float_safe(text_value: str) -> float | None:
+    value = text_value.strip()
+    value = value.replace("?", ",").replace("?", "-").replace("?", "-")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _is_numeric_result_out_of_range(result_value: str, ref_range: str) -> bool:
+    result_num = _parse_float_safe(result_value)
+    if result_num is None:
+        return False
+
+    rr = ref_range.strip().replace(" ", "")
+    if not rr:
+        return False
+
+    # a-b or a~b
+    if "-" in rr or "~" in rr:
+        splitter = "-" if "-" in rr else "~"
+        parts = rr.split(splitter)
+        if len(parts) == 2:
+            lo = _parse_float_safe(parts[0])
+            hi = _parse_float_safe(parts[1])
+            if lo is not None and hi is not None:
+                return result_num < lo or result_num > hi
+
+    # <=x, <x, >=x, >x
+    for op in ("<=", ">=", "<", ">"):
+        if rr.startswith(op):
+            bound = _parse_float_safe(rr[len(op):])
+            if bound is None:
+                return False
+            if op == "<=":
+                return result_num > bound
+            if op == "<":
+                return result_num >= bound
+            if op == ">=":
+                return result_num < bound
+            if op == ">":
+                return result_num <= bound
+
+    return False
 
 
 def _read_cell(row: dict[str, Any], field: str | None) -> Any:
@@ -181,15 +302,15 @@ def _build_filters_sql(
         clauses.append(f"{summary_date_field} >= :summary_start")
         params["summary_start"] = summary_start_date
     if summary_end_date and summary_date_field:
-        clauses.append(f"{summary_date_field} <= :summary_end")
-        params["summary_end"] = summary_end_date
+        clauses.append(f"{summary_date_field} < :summary_end_next")
+        params["summary_end_next"] = summary_end_date + timedelta(days=1)
 
     if final_start_date and final_date_field:
         clauses.append(f"{final_date_field} >= :final_start")
         params["final_start"] = final_start_date
     if final_end_date and final_date_field:
-        clauses.append(f"{final_date_field} <= :final_end")
-        params["final_end"] = final_end_date
+        clauses.append(f"{final_date_field} < :final_end_next")
+        params["final_end_next"] = final_end_date + timedelta(days=1)
 
     if only_abnormal and abnormal_flag_field:
         normal_values = [k.lower() for k in load_dict_mapping().get("abnormal_flag_normal_values", {}).keys()]
@@ -249,9 +370,12 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
         item_name = _fmt(_read_cell(row, _get_source_field("item_name", mapping)))
         result_value = _fmt(_read_cell(row, _get_source_field("result_value", mapping)))
         unit = _fmt(_read_cell(row, _get_source_field("unit", mapping)))
+        ref_range = _fmt(_read_cell(row, _get_source_field("ref_range", mapping)))
         abnormal_flag = _fmt(_read_cell(row, _get_source_field("abnormal_flag", mapping)))
 
-        is_abnormal = bool(abnormal_flag.strip()) and abnormal_flag.strip().lower() not in normal_abnormal_values
+        by_flag = bool(abnormal_flag.strip()) and abnormal_flag.strip().lower() not in normal_abnormal_values
+        by_range = _is_numeric_result_out_of_range(result_value, ref_range)
+        is_abnormal = by_flag or by_range
 
         groups = grouped[key]["groups"]
         if group_name not in groups:
@@ -267,7 +391,7 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
                 item_name=item_name,
                 result_value=result_value,
                 unit=unit or None,
-                ref_range=None,
+                ref_range=ref_range or None,
                 is_abnormal=is_abnormal,
                 abnormal_flag=abnormal_flag or None,
             )
@@ -350,8 +474,15 @@ def _fetch_records_db_paged(
     )
 
     with engine.connect() as conn:
-        count_sql = text(f"SELECT COUNT(DISTINCT {exam_no_field}) AS total FROM {view_name} WHERE {where_sql}")
-        total = int(conn.execute(count_sql, params).scalar() or 0)
+        total_key = _make_total_cache_key(view_name, where_sql, params)
+        total_cached = _cache_get(_TOTAL_CACHE, total_key)
+        if total_cached is None:
+            count_sql = text(f"SELECT COUNT(DISTINCT {exam_no_field}) AS total FROM {view_name} WHERE {where_sql}")
+            total = int(conn.execute(count_sql, params).scalar() or 0)
+            _cache_set(_TOTAL_CACHE, total_key, total, load_app_config().cache_ttl_total_seconds)
+        else:
+            total = int(total_cached)
+
         if total == 0:
             return 0, []
 
@@ -360,17 +491,28 @@ def _fetch_records_db_paged(
         key_params["_offset"] = offset
         key_params["_limit"] = page_size
 
+        final_date_field = _get_source_field("final_date", mapping)
+        summary_date_field = _get_source_field("summary_date", mapping)
+        sort_final = final_date_field or summary_date_field or exam_no_field
+        sort_summary = summary_date_field or exam_no_field
+
         if cfg.db_type == "sqlserver":
             page_sql_str = (
-                f"SELECT DISTINCT {exam_no_field} AS exam_no_key FROM {view_name} "
-                f"WHERE {where_sql} "
-                f"ORDER BY {exam_no_field} OFFSET :_offset ROWS FETCH NEXT :_limit ROWS ONLY"
+                f"SELECT {exam_no_field} AS exam_no_key, "
+                f"MAX({sort_final}) AS sort_final, MAX({sort_summary}) AS sort_summary "
+                f"FROM {view_name} WHERE {where_sql} "
+                f"GROUP BY {exam_no_field} "
+                f"ORDER BY sort_final DESC, sort_summary DESC, exam_no_key DESC "
+                f"OFFSET :_offset ROWS FETCH NEXT :_limit ROWS ONLY"
             )
         else:
             page_sql_str = (
-                f"SELECT DISTINCT {exam_no_field} AS exam_no_key FROM {view_name} "
-                f"WHERE {where_sql} "
-                f"ORDER BY {exam_no_field} LIMIT :_limit OFFSET :_offset"
+                f"SELECT {exam_no_field} AS exam_no_key, "
+                f"MAX({sort_final}) AS sort_final, MAX({sort_summary}) AS sort_summary "
+                f"FROM {view_name} WHERE {where_sql} "
+                f"GROUP BY {exam_no_field} "
+                f"ORDER BY sort_final DESC, sort_summary DESC, exam_no_key DESC "
+                f"LIMIT :_limit OFFSET :_offset"
             )
 
         key_rows = conn.execute(text(page_sql_str), key_params).mappings().all()
@@ -387,11 +529,9 @@ def _fetch_records_db_paged(
 
         group_field = _get_source_field("group_name", mapping)
         item_field = _get_source_field("item_name", mapping)
-        order_parts = [exam_no_field]
-        if group_field:
-            order_parts.append(group_field)
-        if item_field:
-            order_parts.append(item_field)
+        final_date_field = _get_source_field("final_date", mapping)
+        summary_date_field = _get_source_field("summary_date", mapping)
+        order_parts = [p for p in [final_date_field, summary_date_field, exam_no_field, group_field, item_field] if p]
 
         detail_sql = text(
             f"SELECT * FROM {view_name} WHERE {where_sql} "
@@ -402,7 +542,14 @@ def _fetch_records_db_paged(
 
     records = _build_records_from_rows(detail_rows)
     order_index = {no: idx for idx, no in enumerate(page_exam_nos)}
-    records.sort(key=lambda r: order_index.get(r.exam_no, 10**9))
+    records.sort(
+        key=lambda r: (
+            order_index.get(r.exam_no, 10**9),
+            -(r.final_date.toordinal() if r.final_date else 0),
+            -(r.summary_date.toordinal() if r.summary_date else 0),
+            r.exam_no,
+        )
+    )
     return total, records
 
 
@@ -512,15 +659,28 @@ def _filter_records_mock(
         records = [record for record in records if _match_date(record.final_date, final_start_date, final_end_date)]
     if only_abnormal:
         records = [record for record in records if record.has_abnormal]
+    records.sort(
+        key=lambda r: (
+            -(r.final_date.toordinal() if r.final_date else 0),
+            -(r.summary_date.toordinal() if r.summary_date else 0),
+            r.exam_no,
+        )
+    )
     return records
 
 
 def list_orgs() -> list[Org]:
     if _db_enabled():
+        cache_key = "orgs"
+        cached = _cache_get(_META_CACHE, cache_key)
+        if cached is not None:
+            return cached
         try:
             names = _fetch_distinct_field_db("org_name")
             if names:
-                return [Org(org_id=name, org_name=name) for name in names]
+                result = [Org(org_id=name, org_name=name) for name in names]
+                _cache_set(_META_CACHE, cache_key, result, load_app_config().cache_ttl_orgs_seconds)
+                return result
         except Exception:
             pass
     return ORGS
@@ -528,9 +688,14 @@ def list_orgs() -> list[Org]:
 
 def list_project_groups() -> list[str]:
     if _db_enabled():
+        cache_key = "project_groups"
+        cached = _cache_get(_META_CACHE, cache_key)
+        if cached is not None:
+            return cached
         try:
             names = _fetch_distinct_field_db("group_name")
             if names:
+                _cache_set(_META_CACHE, cache_key, names, load_app_config().cache_ttl_groups_seconds)
                 return names
         except Exception:
             pass
@@ -550,6 +715,13 @@ def list_records(
     page: int,
     page_size: int,
 ) -> tuple[int, list[ExamSummaryRecord]]:
+    summary_start_date, summary_end_date, final_start_date, final_end_date = _normalize_date_filters(
+        summary_start_date,
+        summary_end_date,
+        final_start_date,
+        final_end_date,
+    )
+
     if _db_enabled():
         try:
             return _fetch_records_db_paged(

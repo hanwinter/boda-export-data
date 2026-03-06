@@ -15,5 +15,6 @@ fields:
   item_name: CHECKITEMNAME
   result_value: ITEMRESULT
   unit: UNIT
-  abnormal_flag: CRITICALNAME
+  ref_range: CRITICALNAME
+  abnormal_flag:
   diagnosis_result: DIAGRESULT
