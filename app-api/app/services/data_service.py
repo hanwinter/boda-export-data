@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -15,8 +16,8 @@ from app.models import ExamItem, ExamProjectGroup, ExamSummaryRecord, Org
 
 
 ORGS = [
-    Org(org_id="org-001", org_name="第一单位"),
-    Org(org_id="org-002", org_name="第二单位"),
+    Org(org_id="org-001", org_name="Org A"),
+    Org(org_id="org-002", org_name="Org B"),
 ]
 
 
@@ -24,25 +25,25 @@ MOCK_RECORDS = [
     ExamSummaryRecord(
         record_id="rec-1001",
         org_id="org-001",
-        org_name="第一单位",
+        org_name="Org A",
         person_id="p-001",
-        person_name="张三",
-        gender="男",
+        person_name="Test User",
+        gender="M",
         id_no="320101199001011234",
         phone="13800001111",
         exam_no="TJ20260001",
         summary_date=date(2026, 2, 17),
         final_date=date(2026, 2, 18),
-        exam_status="已终检",
+        exam_status="DONE",
         has_abnormal=True,
         project_groups=[
             ExamProjectGroup(
-                group_name="血常规",
+                group_name="CBC",
                 group_is_abnormal=True,
                 abnormal_count=1,
                 items=[
                     ExamItem(
-                        item_name="红细胞",
+                        item_name="RBC",
                         result_value="3.92",
                         unit="10^12/L",
                         ref_range="4.30-5.80",
@@ -50,7 +51,7 @@ MOCK_RECORDS = [
                         abnormal_flag="L",
                     ),
                     ExamItem(
-                        item_name="白细胞",
+                        item_name="WBC",
                         result_value="6.2",
                         unit="10^9/L",
                         ref_range="3.5-9.5",
@@ -68,6 +69,11 @@ SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_$.]+$")
 
 _META_CACHE: dict[str, tuple[float, Any]] = {}
 _TOTAL_CACHE: dict[str, tuple[float, int]] = {}
+logger = logging.getLogger(__name__)
+
+
+class DataSourceError(RuntimeError):
+    pass
 
 
 def _cache_get(cache: dict[str, tuple[float, Any]], key: str):
@@ -114,7 +120,7 @@ def _make_total_cache_key(view_name: str, where_sql: str, params: dict[str, Any]
 
 def _safe_id(name: str) -> str:
     if not name or not SAFE_ID_RE.match(name):
-        raise ValueError("非法标识符")
+        raise ValueError("invalid identifier")
     return name
 
 
@@ -366,7 +372,7 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
                 "groups": {},
             }
 
-        group_name = _fmt(_read_cell(row, _get_source_field("group_name", mapping))) or "未分组"
+        group_name = _fmt(_read_cell(row, _get_source_field("group_name", mapping))) or "Ungrouped"
         item_name = _fmt(_read_cell(row, _get_source_field("item_name", mapping)))
         result_value = _fmt(_read_cell(row, _get_source_field("result_value", mapping)))
         unit = _fmt(_read_cell(row, _get_source_field("unit", mapping)))
@@ -677,12 +683,12 @@ def list_orgs() -> list[Org]:
             return cached
         try:
             names = _fetch_distinct_field_db("org_name")
-            if names:
-                result = [Org(org_id=name, org_name=name) for name in names]
-                _cache_set(_META_CACHE, cache_key, result, load_app_config().cache_ttl_orgs_seconds)
-                return result
-        except Exception:
-            pass
+            result = [Org(org_id=name, org_name=name) for name in names]
+            _cache_set(_META_CACHE, cache_key, result, load_app_config().cache_ttl_orgs_seconds)
+            return result
+        except Exception as exc:
+            logger.exception("Failed to load orgs from database")
+            raise DataSourceError(f"Database query failed (orgs): {exc}") from exc
     return ORGS
 
 
@@ -694,11 +700,11 @@ def list_project_groups() -> list[str]:
             return cached
         try:
             names = _fetch_distinct_field_db("group_name")
-            if names:
-                _cache_set(_META_CACHE, cache_key, names, load_app_config().cache_ttl_groups_seconds)
-                return names
-        except Exception:
-            pass
+            _cache_set(_META_CACHE, cache_key, names, load_app_config().cache_ttl_groups_seconds)
+            return names
+        except Exception as exc:
+            logger.exception("Failed to load project groups from database")
+            raise DataSourceError(f"Database query failed (project-groups): {exc}") from exc
     return sorted({group.group_name for record in MOCK_RECORDS for group in record.project_groups})
 
 
@@ -737,8 +743,9 @@ def list_records(
                 page,
                 page_size,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Failed to load records from database")
+            raise DataSourceError(f"Database query failed (records): {exc}") from exc
 
     filtered = _filter_records_mock(
         org_id,
@@ -781,8 +788,9 @@ def list_records_for_export(
                 final_end_date,
                 only_abnormal,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Failed to load records for export from database")
+            raise DataSourceError(f"Database query failed (export): {exc}") from exc
 
     return _filter_records_mock(
         org_id,

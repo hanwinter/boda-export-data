@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import date
 
@@ -26,7 +26,7 @@ from app.services.auth_service import (
     reset_password,
     set_user_active,
 )
-from app.services.data_service import list_orgs, list_project_groups, list_records, list_records_for_export
+from app.services.data_service import DataSourceError, list_orgs, list_project_groups, list_records, list_records_for_export
 from app.services.export_service import export_records
 
 app = FastAPI(title="Boda Export Data API", version="0.4.0")
@@ -105,12 +105,18 @@ def post_reset_password(
 
 @app.get("/api/orgs")
 def get_orgs(_: UserInfo = Depends(get_current_user)):
-    return list_orgs()
+    try:
+        return list_orgs()
+    except DataSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
 
 @app.get("/api/project-groups")
 def get_project_groups(_: UserInfo = Depends(get_current_user)):
-    return list_project_groups()
+    try:
+        return list_project_groups()
+    except DataSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
 
 @app.get("/api/records", response_model=RecordsResponse)
@@ -128,35 +134,41 @@ def get_records(
     page_size: int = Query(default=20, ge=1, le=100),
     _: UserInfo = Depends(get_current_user),
 ):
-    total, items = list_records(
-        org_id,
-        keyword,
-        exam_no,
-        exam_status,
-        summary_start_date,
-        summary_end_date,
-        final_start_date,
-        final_end_date,
-        only_abnormal,
-        page,
-        page_size,
-    )
+    try:
+        total, items = list_records(
+            org_id,
+            keyword,
+            exam_no,
+            exam_status,
+            summary_start_date,
+            summary_end_date,
+            final_start_date,
+            final_end_date,
+            only_abnormal,
+            page,
+            page_size,
+        )
+    except DataSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
     return RecordsResponse(total=total, page=page, page_size=page_size, items=items)
 
 
 @app.post("/api/export", response_model=ExportResponse)
 def post_export(payload: ExportRequest, _: UserInfo = Depends(get_current_user)):
-    records = list_records_for_export(
-        payload.org_id,
-        payload.keyword,
-        payload.exam_no,
-        payload.exam_status,
-        payload.summary_start_date,
-        payload.summary_end_date,
-        payload.final_start_date,
-        payload.final_end_date,
-        payload.only_abnormal,
-    )
+    try:
+        records = list_records_for_export(
+            payload.org_id,
+            payload.keyword,
+            payload.exam_no,
+            payload.exam_status,
+            payload.summary_start_date,
+            payload.summary_end_date,
+            payload.final_start_date,
+            payload.final_end_date,
+            payload.only_abnormal,
+        )
+    except DataSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
     file_name, file_path = export_records(records, payload.export_dir, payload.selected_groups)
     return ExportResponse(file_name=file_name, file_path=file_path)
-
