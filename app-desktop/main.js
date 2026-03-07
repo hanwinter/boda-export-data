@@ -37,20 +37,30 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function copyDirIfMissing(srcDir, dstDir) {
-  if (!fs.existsSync(srcDir)) {
+function syncConfigDirectory(packagedConfigDir, runtimeConfigDir) {
+  if (!fs.existsSync(packagedConfigDir)) {
     return;
   }
-  ensureDir(dstDir);
-  const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  ensureDir(runtimeConfigDir);
+
+  const entries = fs.readdirSync(packagedConfigDir, { withFileTypes: true });
   for (const entry of entries) {
-    const src = path.join(srcDir, entry.name);
-    const dst = path.join(dstDir, entry.name);
-    if (entry.isDirectory()) {
-      copyDirIfMissing(src, dst);
-    } else if (!fs.existsSync(dst)) {
-      fs.copyFileSync(src, dst);
+    if (!entry.isFile()) {
+      continue;
     }
+
+    const src = path.join(packagedConfigDir, entry.name);
+    const dst = path.join(runtimeConfigDir, entry.name);
+
+    // Keep user-edited DB settings; refresh other templates each startup.
+    if (entry.name.toLowerCase() === "db.yaml") {
+      if (!fs.existsSync(dst)) {
+        fs.copyFileSync(src, dst);
+      }
+      continue;
+    }
+
+    fs.copyFileSync(src, dst);
   }
 }
 
@@ -62,11 +72,13 @@ function prepareRuntimeRoot() {
   const runtimeRoot = path.join(app.getPath("userData"), "runtime");
   const runtimeConfig = path.join(runtimeRoot, "config");
   const runtimeExports = path.join(runtimeRoot, "exports");
+  const runtimeLogs = path.join(runtimeRoot, "logs");
   const packagedConfig = path.join(process.resourcesPath, "config");
 
   ensureDir(runtimeRoot);
   ensureDir(runtimeExports);
-  copyDirIfMissing(packagedConfig, runtimeConfig);
+  ensureDir(runtimeLogs);
+  syncConfigDirectory(packagedConfig, runtimeConfig);
 
   return runtimeRoot;
 }
@@ -141,20 +153,34 @@ async function ensureBackendRunning(runtimeRoot) {
     throw new Error(`后端启动文件不存在: ${startCmd.command}`);
   }
 
+  const logDir = path.join(runtimeRoot, "logs");
+  ensureDir(logDir);
+  const logPath = path.join(logDir, "backend.log");
+  const logStream = fs.createWriteStream(logPath, { flags: "a" });
+
   backendProcess = spawn(startCmd.command, startCmd.args, {
     cwd: startCmd.cwd,
     env: startCmd.env,
-    windowsHide: true
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
   });
   backendStartedByApp = true;
 
+  backendProcess.stdout.on("data", (chunk) => logStream.write(chunk));
+  backendProcess.stderr.on("data", (chunk) => logStream.write(chunk));
+
   backendProcess.on("exit", () => {
     backendProcess = null;
+    try {
+      logStream.end();
+    } catch {
+      // ignore
+    }
   });
 
   const ready = await waitApiReady(apiBase, 30000);
   if (!ready) {
-    throw new Error("后端启动超时，请检查数据库配置或端口占用");
+    throw new Error(`后端启动超时，请检查配置或查看日志: ${logPath}`);
   }
 }
 
@@ -188,6 +214,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     dialog.showErrorBox("后端启动失败", String(error?.message || error));
   }
+
   createWindow();
 
   app.on("activate", () => {

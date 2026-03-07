@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -129,11 +130,60 @@ def _build_engine():
     if not cfg.enabled or not cfg.host or not cfg.database or not cfg.user:
         return None
 
-    password = quote_plus(cfg.password)
     if cfg.db_type == "sqlserver":
-        url = f"mssql+pymssql://{cfg.user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}"
-    else:
-        url = f"mysql+pymysql://{cfg.user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}?charset=utf8mb4"
+        preferred_driver = os.getenv("BODA_SQLSERVER_ODBC_DRIVER", "").strip()
+        driver_candidates = [preferred_driver] if preferred_driver else [
+            "ODBC Driver 18 for SQL Server",
+            "ODBC Driver 17 for SQL Server",
+            "SQL Server",
+        ]
+
+        available: list[str] = []
+        selected_driver = driver_candidates[0]
+        pyodbc_error: str | None = None
+
+        try:
+            import pyodbc  # type: ignore
+
+            available = [d.strip() for d in pyodbc.drivers() if d.strip()]
+            for drv in driver_candidates:
+                if drv in available:
+                    selected_driver = drv
+                    break
+
+            odbc_connect = (
+                f"DRIVER={{{selected_driver}}};"
+                f"SERVER={cfg.host},{cfg.port};"
+                f"DATABASE={cfg.database};"
+                f"UID={cfg.user};"
+                f"PWD={cfg.password};"
+                "Encrypt=no;"
+                "TrustServerCertificate=yes;"
+            )
+            pyodbc_url = f"mssql+pyodbc:///?odbc_connect={quote_plus(odbc_connect)}"
+            logger.info("SQLServer engine using pyodbc driver: %s", selected_driver)
+            return create_engine(pyodbc_url, pool_pre_ping=True)
+        except Exception as exc:
+            pyodbc_error = (
+                "SQLServer pyodbc init failed; "
+                f"driver={selected_driver}; available_drivers={available}; error={exc}"
+            )
+            logger.warning(pyodbc_error)
+
+        try:
+            user = quote_plus(cfg.user)
+            password = quote_plus(cfg.password)
+            pymssql_url = f"mssql+pymssql://{user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}"
+            logger.info("SQLServer engine fallback to pymssql")
+            return create_engine(pymssql_url, pool_pre_ping=True)
+        except Exception as exc:
+            raise RuntimeError(
+                "SQLServer connection init failed for both pyodbc and pymssql; "
+                f"pyodbc_error={pyodbc_error}; pymssql_error={exc}"
+            ) from exc
+
+    password = quote_plus(cfg.password)
+    url = f"mysql+pymysql://{cfg.user}:{password}@{cfg.host}:{cfg.port}/{cfg.database}?charset=utf8mb4"
     return create_engine(url, pool_pre_ping=True)
 
 

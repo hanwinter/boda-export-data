@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -516,7 +516,10 @@ export function App() {
         >
           <Form form={exportForm} layout="vertical">
             <Form.Item name="export_dir" label="导出目录（可选）" extra="留空则使用默认 exports 目录">
-              <Input placeholder="例如：D:\\ExportFiles\\HealthData" />
+              <Space.Compact style={{ width: "100%" }}>
+                <Input placeholder="例如：D:\\ExportFiles\\HealthData" />
+                <Button onClick={pickExportDirectory}>选择目录</Button>
+              </Space.Compact>
             </Form.Item>
 
             <Form.Item
