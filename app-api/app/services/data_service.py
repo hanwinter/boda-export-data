@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -398,7 +398,7 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
         person_name = _fmt(_read_cell(row, _get_source_field("person_name", mapping)))
         gender_raw = _fmt(_read_cell(row, _get_source_field("gender", mapping)))
         phone = _fmt(_read_cell(row, _get_source_field("phone", mapping)))
-
+        id_no = _fmt(_read_cell(row, _get_source_field("id_no", mapping)))
         summary_date = _to_date(_read_cell(row, _get_source_field("summary_date", mapping)))
         final_date = _to_date(_read_cell(row, _get_source_field("final_date", mapping)))
 
@@ -414,6 +414,7 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
                 "person_id": key,
                 "person_name": person_name,
                 "gender": gender_map.get(gender_raw, gender_raw),
+                "id_no": id_no,
                 "phone": phone,
                 "exam_no": exam_no,
                 "summary_date": summary_date,
@@ -476,7 +477,7 @@ def _build_records_from_rows(rows: list[dict[str, Any]]) -> list[ExamSummaryReco
                 person_id=payload["person_id"],
                 person_name=payload["person_name"],
                 gender=payload["gender"] or None,
-                id_no=None,
+                id_no=payload["id_no"] or None,
                 phone=payload["phone"] or None,
                 exam_no=payload["exam_no"],
                 summary_date=payload["summary_date"],
@@ -853,3 +854,4 @@ def list_records_for_export(
         final_end_date,
         only_abnormal,
     )
+

@@ -5,6 +5,7 @@ fields:
   exam_no: SGLCHECKID
   person_name: NAME
   gender: SEX
+  id_no: IDCARD
   age: age
   phone: MOBILEPHONE
   register_date: REGISTDATE
@@ -18,3 +19,4 @@ fields:
   ref_range: CRITICALNAME
   abnormal_flag:
   diagnosis_result: DIAGRESULT
+
